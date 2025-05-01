@@ -5,6 +5,7 @@ from langchain_community.utilities import SQLDatabase
 from sqlalchemy import create_engine
 from dotenv import load_dotenv
 import os
+import pandas as pd
 
 # Load environment variables from .env file
 load_dotenv()
@@ -14,72 +15,69 @@ api_key = os.getenv("OPENAI_API_KEY")
 if not api_key:
     st.error("API key not found. Please check your .env file.")
 else:
-    os.environ["OPENAI_API_KEY"] = api_key  # Set API key as environment variable for OpenAI
+    os.environ["OPENAI_API_KEY"] = api_key  # for ChatOpenAI
 
-# Database setup
-engine = create_engine("sqlite:///drs.db")
+# Database setup: connect to a SQLite file called alerts.db
+engine = create_engine("sqlite:///digital.db")
+
+# OPTIONAL: if you have a CSV, load it into SQLite
+# df = pd.read_csv("alerts.csv")
+# df.to_sql("alerts", con=engine, if_exists="replace", index=False)
+
 db = SQLDatabase(engine=engine)
 llm = ChatOpenAI(model="gpt-4o-mini")
-agent_executor = create_sql_agent(llm, db=db, agent_type="openai-tools", verbose=True)
+agent_executor = create_sql_agent(
+    llm,
+    db=db,
+    agent_type="openai-tools",
+    verbose=True
+)
 
 # Data dictionary for context
 data_dictionary = """
-| Column Name                        | Description                                                                                             |
-|------------------------------------|---------------------------------------------------------------------------------------------------------|
-| Traffic Number                     | Unique identifier for each driver (e.g., 100001, 100002, etc.)                                          |
-| Driver Name                        | Name assigned to the driver (e.g., "Driver_42")                                                         |
-| Datetime                           | Date and time of the incident in the format YYYY-MM-DD HH:MM:SS                                         |
-| Total Fine                         | Fine amount (if the record is a ticket). Blank if the record is an accident                             |
-| Location                           | Road name or area of the incident location within Abu Dhabi                                            |
-| Latitude                           | Geographic latitude of the incident location (approx. 24.40–24.50)                                      |
-| Longitude                          | Geographic longitude of the incident location (approx. 54.30–54.45)                                     |
-| Ticket Offence Description         | Description of the traffic violation (if a ticket). Blank if the record is an accident                  |
-| Age Range                          | Bucketed age category of the driver (e.g., "18-24", "25-30", etc.)                                      |
-| Age                                | Actual integer age of the driver, fitting within the Age Range                                          |
-| Gender                             | Driver's gender (e.g., Male, Female)                                                                    |
-| Nationality                        | Driver's nationality (e.g., Emirati, Indian, Pakistani, etc.)                                           |
-| Driving Experience (years in UAE)  | Number of years the driver has been licensed in the UAE                                                 |
-| Record Type                        | Type of record (e.g., "Ticket" or "Accident")                                                           |
-| Accident Type                      | Type of accident (e.g., "Rear-end Collision", "Head-on Collision"). Blank if the record is a ticket     |
-| Accident Cause                     | Primary cause of the accident (e.g., Speeding, Distracted Driving). Blank if the record is a ticket     |
-| Intoxication                       | Indicator (1 for intoxicated, 0 for not intoxicated)                                                    |
-| Car Model                          | Make and model of the involved vehicle (e.g., Toyota Camry, BMW 5 Series)                               |
-| Car Year                           | Manufacture year of the vehicle (e.g., 2015, 2020)                                                      |
-| Car Condition                      | Condition of the vehicle (e.g., Good, Medium, Bad)                                                      |
-| Driver Risk Score                  | Calculated driver risk score (range: 300–900) indicating likelihood of future incidents                |
-| Road Status                        | Status of the road (e.g., Clear, Busy, Wet)                                                             |
-| Weather                            | Weather conditions at the time of incident (e.g., Clear, Rainy, Foggy)                                  |
-      |
+| Column Name                   | Description                                                                                   |
+|-------------------------------|-----------------------------------------------------------------------------------------------|
+| alert_id                      | Unique ID for each alert (UUID string)                                                        |
+| actionable_entity_id          | Identifier for the related entity (e.g., CTR-1, CTR-2)                                        |
+| actionable_entity_nm          | Name of the entity in Arabic (e.g., عقد تشغيل مراكز تحفيظ)                                    |
+| actionable_entity_type_nm     | Type of entity (e.g., عقد)                                                                    |
+| created_dttm                  | When the alert was created (format DDMMMyy:HH:MM:SS)                                           |
+| lstupdt_dttm                  | Last update timestamp (DDMMMyy:HH:MM:SS.ssssss)                                              |
+| lstupdt_user_id               | User who last updated the alert (e.g., فهد الحربي)                                            |
+| status_dttm                   | When the status last changed (DDMMMyy:HH:MM:SS)                                              |
+| alert_status_id               | Status of the alert (e.g., OPEN, CLOSED)                                                      |
+| assigned_user_id              | User assigned (e.g., فهد الحربي, ريم العتيبي)                                                  |
+| assignment_dttm               | When it was assigned (DDMMMyy:HH:MM:SS)                                                      |
+| alert_age                     | Age of the alert in minutes (integer)                                                         |
+| Alert_Priority                | Priority (e.g., Low, Medium, High)                                                            |
+| lst_refresh_dt                | When the data was last refreshed (DDMMMyy:HH:MM:SS)                                            |
 """
-
 
 # Streamlit UI setup
 st.title("Digital Assistant")
 st.write("Ask me anything!")
 
-# Chatbot conversation state
+# Initialize conversation history
 if "conversation" not in st.session_state:
     st.session_state.conversation = []
 
-# User input
+# User input box
 user_input = st.text_input("You:", key="user_input")
 
 if user_input:
-    # Add the data dictionary to the input for better context
+    # Prepend the data dictionary for context
     input_text = f"Refer to the following data dictionary for context:\n\n{data_dictionary}\n\n{user_input}"
-    # Query the RAG model
+    # Invoke the SQL agent
     result = agent_executor.invoke({"input": input_text})["output"]
-    # Append conversation history
-    st.session_state.conversation.append(("User", user_input))
+    # Save into session history
+    st.session_state.conversation.append(("You", user_input))
     st.session_state.conversation.append(("Bot", result))
-    user_input = ""  # Clear input after submission
+    user_input = ""  # clear after send
 
-# Display conversation history in a container with autoscroll enabled
+# Display the chat history
 with st.container():
     for speaker, text in st.session_state.conversation:
-        if speaker == "User":
-            st.write(f"**You:** {text}")
+        if speaker == "You":
+            st.markdown(f"**You:** {text}")
         else:
-            st.write(f"**Bot:** {text}")
-    # Automatically scrolls to the latest conversation entry
-    st_autoscroll = True
+            st.markdown(f"**Bot:** {text}")
